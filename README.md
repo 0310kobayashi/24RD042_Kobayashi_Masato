@@ -1,2 +1,3 @@
 # 24RD042_Kobayashi_Masato
 Jyugyoude_Thukutta_repository_git_no_recture
+#a_test_test_1kaime_no_hennsyuudesu
