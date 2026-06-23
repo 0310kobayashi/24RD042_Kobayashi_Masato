@@ -1,0 +1,2 @@
+# 24RD042_Kobayashi_Masato
+Jyugyoude_Thukutta_repository_git_no_recture
