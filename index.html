@@ -5,73 +5,39 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>空気循環システム</title>
 <style>
-  :root {
-    --bg: #0d1117;
-    --panel: #161b22;
-    --accent: #2f81f7;
-    --danger: #f85149;
-    --text: #e6edf3;
-    --muted: #8b949e;
-  }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0;
-    min-height: 100vh;
-    background: radial-gradient(circle at 50% 0%, #1b2230 0%, var(--bg) 70%);
-    color: var(--text);
-    font-family: "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif;
+    background: #000;                 /* 起動時の暫定色（JSが動画の色に差し替え） */
+    transition: background-color .4s ease;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 24px;
+    gap: 28px;
     padding: 32px 16px;
   }
-  header { text-align: center; }
-  h1 { margin: 0 0 4px; font-size: clamp(22px, 4vw, 34px); letter-spacing: 0.06em; }
-  .subtitle { color: var(--muted); font-size: 14px; }
 
   .stage {
     position: relative;
-    width: min(90vw, 720px);
+    width: min(92vw, 760px);
     aspect-ratio: 16 / 9;
-    background: #000;
-    border-radius: 14px;
-    overflow: hidden;
-    box-shadow: 0 12px 40px rgba(0,0,0,.55);
-    border: 1px solid #21262d;
   }
   .stage video {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
     opacity: 0;
     transition: opacity .35s ease;
   }
   .stage video.visible { opacity: 1; }
 
-  .error-overlay {
-    position: absolute;
-    inset: 0;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 24px;
-    background: rgba(0,0,0,.8);
-    color: var(--muted);
-    font-size: 13px;
-    line-height: 1.7;
-  }
-  .error-overlay.show { display: flex; }
-
   .controls { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
   button {
-    font: inherit;
-    font-size: 16px;
-    font-weight: 600;
+    font: 600 16px "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif;
     color: #fff;
     border: none;
     border-radius: 10px;
@@ -84,46 +50,16 @@
   #startBtn { background: linear-gradient(135deg, #2f81f7, #1f6feb); }
   #stopBtn  { background: linear-gradient(135deg, #f85149, #da3633); }
   button:not(:disabled):hover { filter: brightness(1.1); }
-
-  .status {
-    display: flex;
-    gap: 18px;
-    align-items: center;
-    color: var(--muted);
-    font-size: 13px;
-    min-height: 20px;
-  }
-  .dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: #30363d; transition: background .2s, box-shadow .2s;
-  }
-  .dot.on { background: var(--danger); box-shadow: 0 0 10px var(--danger); animation: pulse 1s infinite; }
-  @keyframes pulse { 50% { opacity: .4; } }
-
-  .warn { color: #d29922; font-size: 12px; text-align: center; max-width: 520px; }
 </style>
 </head>
 <body>
-  <header>
-    <h1>空気循環システム</h1>
-    <div class="subtitle">— あなたのPCで、空気を循環させます —</div>
-  </header>
-
-  <div class="stage" id="stage">
-    <!-- 循環中（長尺・ループ） -->
+  <div class="stage">
     <video id="runVideo"  class="visible" preload="auto" playsinline>
-      <source src="0001-2400.mkv" type="video/x-matroska">
+      <source src="0001-2400.mp4" type="video/mp4">
     </video>
-    <!-- 停止時（短尺・差し替え） -->
     <video id="stopVideo" preload="auto" playsinline>
-      <source src="0001-0240.mkv" type="video/x-matroska">
+      <source src="0001-0240.mp4" type="video/mp4">
     </video>
-    <div class="error-overlay" id="errorOverlay">
-      動画を再生できませんでした。<br>
-      多くのブラウザは .mkv に対応していません。<br>
-      <code>0001-2400.mkv</code> / <code>0001-0240.mkv</code> を
-      <code>.mp4 (H.264)</code> または <code>.webm</code> に変換してください。
-    </div>
   </div>
 
   <div class="controls">
@@ -131,38 +67,28 @@
     <button id="stopBtn" disabled>停止する</button>
   </div>
 
-  <div class="status">
-    <span class="dot" id="dot"></span>
-    <span id="statusText">待機中</span>
-  </div>
-
-  <p class="warn">⚠ 「循環」中はCPUを全力で回してファンを動かします。PCが熱くなり、バッテリーを消費します。</p>
-
 <script>
   "use strict";
 
-  const runVideo   = document.getElementById("runVideo");
-  const stopVideo  = document.getElementById("stopVideo");
-  const startBtn   = document.getElementById("startBtn");
-  const stopBtn    = document.getElementById("stopBtn");
-  const dot        = document.getElementById("dot");
-  const statusText = document.getElementById("statusText");
-  const errorOverlay = document.getElementById("errorOverlay");
+  const runVideo  = document.getElementById("runVideo");
+  const stopVideo = document.getElementById("stopVideo");
+  const startBtn  = document.getElementById("startBtn");
+  const stopBtn   = document.getElementById("stopBtn");
 
-  /* ---- CPU負荷ワーカー（コアごとに計算ループを回す＝ファンが回る） ---- */
+  /* ---- CPU負荷ワーカー（コアごとに計算ループ＝ファンが回る） ---- */
   const workerSource = `
     let running = false;
     function chunk() {
       if (!running) return;
-      const end = performance.now() + 70;   // 70msだけ全力で計算
+      const end = performance.now() + 70;
       let x = 0.0001;
       while (performance.now() < end) {
         for (let i = 0; i < 50000; i++) {
           x += Math.sqrt(i * 1.0001) * Math.sin(x) * Math.cos(i);
         }
       }
-      if (x === Infinity) self.postMessage(x); // 最適化による消去を防ぐ
-      setTimeout(chunk, 0);                     // メッセージ処理のため一瞬だけ譲る
+      if (x === Infinity) self.postMessage(x);
+      setTimeout(chunk, 0);
     }
     self.onmessage = (e) => {
       if (e.data === "start") { if (!running) { running = true; chunk(); } }
@@ -179,63 +105,70 @@
       w.postMessage("start");
       workers.push(w);
     }
-    return cores;
   }
   function stopLoad() {
     workers.forEach((w) => w.terminate());
     workers = [];
   }
 
-  /* ---- 動画の表示切り替え ---- */
+  /* ---- 動画の背景色をページ背景に反映 ---- */
+  function matchBackground() {
+    try {
+      const c = document.createElement("canvas");
+      c.width = 32; c.height = 18;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(runVideo, 0, 0, c.width, c.height);
+      // 四隅を平均して背景色とみなす
+      const pts = [[0,0],[c.width-1,0],[0,c.height-1],[c.width-1,c.height-1]];
+      let r=0,g=0,b=0;
+      for (const [x,y] of pts) {
+        const d = ctx.getImageData(x, y, 1, 1).data; // file:// では SecurityError になり得る
+        r+=d[0]; g+=d[1]; b+=d[2];
+      }
+      const n = pts.length;
+      document.body.style.backgroundColor = `rgb(${Math.round(r/n)},${Math.round(g/n)},${Math.round(b/n)})`;
+    } catch (_) { /* tainted canvas（ローカルfile://のChrome等）→ 黒のまま */ }
+  }
+
   function show(video) {
     runVideo.classList.toggle("visible", video === runVideo);
     stopVideo.classList.toggle("visible", video === stopVideo);
   }
 
-  /* ---- 起動時：先頭フレームで静止 ---- */
-  runVideo.addEventListener("loadeddata", () => { try { runVideo.currentTime = 0; } catch (_) {} });
-  runVideo.addEventListener("error", () => errorOverlay.classList.add("show"));
+  /* ---- 起動時：先頭フレームで静止＋背景色取得 ---- */
+  runVideo.addEventListener("loadeddata", () => {
+    try { runVideo.currentTime = 0; } catch (_) {}
+    matchBackground();
+  });
 
   /* ---- 循環開始 ---- */
   let circulating = false;
   startBtn.addEventListener("click", async () => {
     if (circulating) return;
     circulating = true;
-
-    const cores = startLoad();
-
+    startLoad();
     show(runVideo);
     runVideo.loop = true;
     runVideo.currentTime = 0;
     try { await runVideo.play(); } catch (_) {}
-
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    dot.classList.add("on");
-    statusText.textContent = `循環中 — ${cores} コアに負荷をかけています`;
   });
 
   /* ---- 停止：負荷を止め、シームレスに短尺へ差し替え ---- */
   stopBtn.addEventListener("click", async () => {
     if (!circulating) return;
     circulating = false;
-
     stopLoad();
-
-    // 停止クリップを先頭から、重ねて再生 → クロスフェード
     stopVideo.loop = false;
     stopVideo.currentTime = 0;
     try { await stopVideo.play(); } catch (_) {}
     show(stopVideo);
-    setTimeout(() => runVideo.pause(), 400); // フェード完了後に裏側を停止
-
+    setTimeout(() => runVideo.pause(), 400);
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    dot.classList.remove("on");
-    statusText.textContent = "停止しました";
   });
 
-  /* ---- 離脱時に負荷を確実に止める ---- */
   window.addEventListener("beforeunload", stopLoad);
 </script>
 </body>
