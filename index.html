@@ -9,8 +9,7 @@
   html, body { height: 100%; }
   body {
     margin: 0;
-    background: #000;                 /* 起動時の暫定色（JSが動画の色に差し替え） */
-    transition: background-color .4s ease;
+    background: #cfc8c9;              /* 動画内の背景（灰色）に合わせる */
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -31,9 +30,8 @@
     height: 100%;
     object-fit: contain;
     opacity: 0;
-    transition: opacity .35s ease;
+    transition: opacity .3s ease;
   }
-  .stage video.visible { opacity: 1; }
 
   .controls { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
   button {
@@ -54,10 +52,12 @@
 </head>
 <body>
   <div class="stage">
-    <video id="runVideo"  class="visible" preload="auto" playsinline>
+    <!-- 循環中（長尺・ループ） 初期表示 -->
+    <video id="runVideo"  style="opacity:1; z-index:1" preload="auto" playsinline>
       <source src="0001-2400.mp4" type="video/mp4">
     </video>
-    <video id="stopVideo" preload="auto" playsinline>
+    <!-- 停止時（短尺・差し替え） -->
+    <video id="stopVideo" style="z-index:2" preload="auto" playsinline>
       <source src="0001-0240.mp4" type="video/mp4">
     </video>
   </div>
@@ -98,12 +98,16 @@
   const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "application/javascript" }));
   let workers = [];
 
+  // 再生が始まってから、コアを1個ずつ時間差で起動（一気に掴んでカクつかせない）
   function startLoad() {
     const cores = navigator.hardwareConcurrency || 4;
     for (let i = 0; i < cores; i++) {
-      const w = new Worker(workerUrl);
-      w.postMessage("start");
-      workers.push(w);
+      setTimeout(() => {
+        if (!circulating) return;            // 起動前に停止されていたら追加しない
+        const w = new Worker(workerUrl);
+        w.postMessage("start");
+        workers.push(w);
+      }, i * 20);
     }
   }
   function stopLoad() {
@@ -111,46 +115,36 @@
     workers = [];
   }
 
-  /* ---- 動画の背景色をページ背景に反映 ---- */
-  function matchBackground() {
-    try {
-      const c = document.createElement("canvas");
-      c.width = 32; c.height = 18;
-      const ctx = c.getContext("2d");
-      ctx.drawImage(runVideo, 0, 0, c.width, c.height);
-      // 四隅を平均して背景色とみなす
-      const pts = [[0,0],[c.width-1,0],[0,c.height-1],[c.width-1,c.height-1]];
-      let r=0,g=0,b=0;
-      for (const [x,y] of pts) {
-        const d = ctx.getImageData(x, y, 1, 1).data; // file:// では SecurityError になり得る
-        r+=d[0]; g+=d[1]; b+=d[2];
-      }
-      const n = pts.length;
-      document.body.style.backgroundColor = `rgb(${Math.round(r/n)},${Math.round(g/n)},${Math.round(b/n)})`;
-    } catch (_) { /* tainted canvas（ローカルfile://のChrome等）→ 黒のまま */ }
+  /* ---- クロスフェード：下の動画は不透明のまま、上に次の動画をフェードイン ---- */
+  let current = runVideo;                     // 現在表示中
+  function crossTo(incoming) {
+    if (incoming === current) return;
+    const outgoing = current;
+    incoming.style.zIndex = "2";
+    outgoing.style.zIndex = "1";
+    outgoing.style.opacity = "1";             // 下層は完全不透明を維持（背景が透けない＝暗転しない）
+    incoming.style.opacity = "0";
+    void incoming.offsetWidth;                // リフロー強制でトランジションを効かせる
+    incoming.style.opacity = "1";             // 上層をフェードイン
+    current = incoming;
   }
 
-  function show(video) {
-    runVideo.classList.toggle("visible", video === runVideo);
-    stopVideo.classList.toggle("visible", video === stopVideo);
-  }
-
-  /* ---- 起動時：先頭フレームで静止＋背景色取得 ---- */
-  runVideo.addEventListener("loadeddata", () => {
-    try { runVideo.currentTime = 0; } catch (_) {}
-    matchBackground();
-  });
+  /* ---- 起動時：両動画を先頭フレームで描画して準備（切替時の黒を防ぐ） ---- */
+  runVideo.addEventListener("loadeddata",  () => { try { runVideo.currentTime  = 0; } catch (_) {} });
+  stopVideo.addEventListener("loadeddata", () => { try { stopVideo.currentTime = 0; } catch (_) {} });
 
   /* ---- 循環開始 ---- */
   let circulating = false;
   startBtn.addEventListener("click", async () => {
     if (circulating) return;
     circulating = true;
-    startLoad();
-    show(runVideo);
+
     runVideo.loop = true;
-    runVideo.currentTime = 0;
+    if (current !== runVideo) runVideo.currentTime = 0;   // 戻すときだけシーク
+    crossTo(runVideo);                                    // 先に映像を出してから
     try { await runVideo.play(); } catch (_) {}
+    setTimeout(startLoad, 120);                           // 再生が乗ってから負荷を立ち上げ
+
     startBtn.disabled = true;
     stopBtn.disabled = false;
   });
@@ -159,12 +153,14 @@
   stopBtn.addEventListener("click", async () => {
     if (!circulating) return;
     circulating = false;
+
     stopLoad();
     stopVideo.loop = false;
     stopVideo.currentTime = 0;
+    crossTo(stopVideo);
     try { await stopVideo.play(); } catch (_) {}
-    show(stopVideo);
-    setTimeout(() => runVideo.pause(), 400);
+    setTimeout(() => runVideo.pause(), 350);              // フェード完了後に裏側を停止
+
     startBtn.disabled = false;
     stopBtn.disabled = true;
   });
