@@ -82,15 +82,20 @@
   const startBtn = document.getElementById("startBtn");
   const stopBtn  = document.getElementById("stopBtn");
 
-  /* ==== 動画の構成（0001-2400.mp4） ====
-     先頭: 回り始め（加速）→ 中盤: 全速 → 末尾 WIND 秒: 回り終わり（減速して停止）
-     循環中は「回り終わりの直前の全速部分」だけをループして回し続け、
-     停止クリック時に、その瞬間の回転速度に応じて末尾 WIND 秒の中へシークする。 */
-  const WIND     = 5;      // 末尾の「回り終わり」区間（秒）
-  const LOOP_LEN = 3;      // 全速を持続させるループ区間の長さ（秒）
-  const EPS      = 0.25;   // 末尾に入る前にループバックする余裕（秒）
+  /* ==== 停止時の再生位置ルール（動画長 D、停止クリック時の再生位置 t 秒） ====
+       ・t <= EARLY（回り始め直後）：末尾を EARLY_MIN〜EARLY_MAX 秒だけ再生
+           t=0    → 末尾 1秒（すぐ止まる）
+           t=EARLY→ 末尾 4秒
+       ・それ以外：末尾 LATE_FROM 秒目から再生（しっかり回り終わる）           */
+  const EARLY     = 5;    // 「回り始め直後」とみなす秒数
+  const EARLY_MIN = 1;    // 早く止めたときの末尾秒数
+  const EARLY_MAX = 4;    // EARLY 秒時点での末尾秒数
+  const LATE_FROM = 6;    // それ以降で止めたときに再生を始める「末尾からの秒数」
 
-  function windStart() { const d = video.duration; return (d && isFinite(d)) ? d - WIND : 0; }
+  /* 循環中はここ（末尾の回り終わり）に入らないようループさせる */
+  const WIND     = LATE_FROM;   // 末尾の回り終わり区間の目安（秒）
+  const LOOP_LEN = 3;           // 全速を持続させるループ区間の長さ（秒）
+  const EPS      = 0.25;        // 末尾に入る手前でループバックする余裕（秒）
 
   /* ---- CPU負荷ワーカー（コアごとに計算ループ＝ファンが回る） ---- */
   const workerSource = `
@@ -131,21 +136,14 @@
     workers = [];
   }
 
-  /* ---- 回転速度(0〜1)を追跡 ---- */
-  let reachedFull = false;
-  function spinSpeed() {
-    if (reachedFull) return 1;
-    const ws = windStart();
-    return ws > 0 ? Math.max(0, Math.min(1, video.currentTime / ws)) : 0;
-  }
-
-  /* ---- 循環中：末尾に入る手前で全速区間へループバック ---- */
+  /* ---- 循環中：末尾に入る手前で全速区間へループバック（回し続ける） ---- */
   video.addEventListener("timeupdate", () => {
     if (!circulating) return;
-    const ws = windStart();
-    if (ws > 0 && video.currentTime >= ws - EPS) {
-      reachedFull = true;
-      try { video.currentTime = Math.max(0, ws - LOOP_LEN); } catch (_) {}
+    const d = video.duration;
+    if (!d || !isFinite(d)) return;
+    const bound = d - WIND;
+    if (bound > 0 && video.currentTime >= bound - EPS) {
+      try { video.currentTime = Math.max(0, bound - LOOP_LEN); } catch (_) {}
     }
   });
 
@@ -157,7 +155,6 @@
   startBtn.addEventListener("click", async () => {
     if (circulating) return;
     circulating = true;
-    reachedFull = false;
 
     video.loop = false;
     video.currentTime = 0;
@@ -170,18 +167,25 @@
     stopBtn.classList.remove("active");
   });
 
-  /* ---- 停止：負荷を止め、末尾の「回り終わり」へ速度に応じてシーク ---- */
+  /* ---- 停止：負荷を止め、末尾（回り終わり）へクリックのタイミングに応じてシーク ---- */
   stopBtn.addEventListener("click", async () => {
     if (!circulating) return;
     circulating = false;                 // 先にfalse（timeupdateのループバックを止める）
     stopLoad();
 
-    const ws = windStart();
-    const d  = video.duration;
-    if (ws > 0 && d && isFinite(d)) {
-      const speed = spinSpeed();         // 1=全速 → 末尾先頭 / 0=低速 → 末尾終盤
-      const target = ws + (1 - speed) * WIND;
-      try { video.currentTime = Math.min(d - 0.05, target); } catch (_) {}
+    const d = video.duration;
+    if (d && isFinite(d)) {
+      const t = video.currentTime;       // 停止クリック時の再生位置
+      let tailSec;
+      if (t <= EARLY) {
+        // 回り始め直後：末尾 1〜4秒（早い＝短い）
+        tailSec = EARLY_MIN + (t / EARLY) * (EARLY_MAX - EARLY_MIN);
+      } else {
+        // それ以外：末尾6秒目から
+        tailSec = LATE_FROM;
+      }
+      const target = Math.max(0, Math.min(d - 0.05, d - tailSec));
+      try { video.currentTime = target; } catch (_) {}
     }
     try { await video.play(); } catch (_) {}   // 末尾を再生し切って停止フレームで静止
 
