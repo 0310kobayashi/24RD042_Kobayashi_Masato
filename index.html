@@ -148,14 +148,36 @@
   runVideo.addEventListener("loadeddata",  () => { try { runVideo.currentTime  = 0; } catch (_) {} });
   stopVideo.addEventListener("loadeddata", () => { try { stopVideo.currentTime = 0; } catch (_) {} });
 
+  /* ---- スピンアップの進み具合＝現在の回転速度(0〜1)を追跡 ----
+     長尺=加速動画。末尾 TAIL 区間を「全速」とみなし、そこへ達したら
+     末尾だけをループさせる（毎回スロー状態へ戻る違和感を防ぐ）。 */
+  const TAIL = 0.18;               // 末尾18%＝全速の持続ループ区間
+  let reachedFull = false;         // 一度でも全速に達したか
+  function spinSpeed() {           // 現在の回転速度（0=停止, 1=全速）
+    if (reachedFull) return 1;
+    const d = runVideo.duration;
+    if (!d || !isFinite(d)) return 0;
+    return Math.max(0, Math.min(1, runVideo.currentTime / (d * (1 - TAIL))));
+  }
+  runVideo.addEventListener("timeupdate", () => {
+    if (!circulating) return;
+    const d = runVideo.duration;
+    if (!d || !isFinite(d)) return;
+    if (runVideo.currentTime >= d - 0.06) {   // 加速し切った → 全速の末尾へループ
+      reachedFull = true;
+      try { runVideo.currentTime = d * (1 - TAIL); } catch (_) {}
+    }
+  });
+
   /* ---- 循環開始 ---- */
   let circulating = false;
   startBtn.addEventListener("click", async () => {
     if (circulating) return;
     circulating = true;
 
-    runVideo.loop = true;
-    if (current !== runVideo) runVideo.currentTime = 0;
+    runVideo.loop = false;        // 末尾ループは timeupdate で管理
+    reachedFull = false;
+    runVideo.currentTime = 0;     // スピンアップを最初から
     crossTo(runVideo);
     try { await runVideo.play(); } catch (_) {}
     setTimeout(startLoad, 120);
@@ -173,7 +195,15 @@
 
     stopLoad();
     stopVideo.loop = false;
-    stopVideo.currentTime = 0;
+    // 現在の回転速度に合わせてスピンダウンの開始位置を決める。
+    // 速い(1)→最初から全減速 / 遅い(0)→終盤からすぐ停止
+    const speed = spinSpeed();
+    const sd = stopVideo.duration;
+    if (sd && isFinite(sd)) {
+      stopVideo.currentTime = Math.max(0, Math.min(sd - 0.05, (1 - speed) * sd));
+    } else {
+      stopVideo.currentTime = 0;
+    }
     crossTo(stopVideo);
     try { await stopVideo.play(); } catch (_) {}
     setTimeout(() => runVideo.pause(), 350);
