@@ -42,8 +42,6 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
-    opacity: 0;
-    transition: opacity .3s ease;
   }
 
   .controls { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
@@ -67,13 +65,8 @@
   <h1>空気循環ウェブサイト</h1>
 
   <div class="stage">
-    <!-- 循環中（長尺・ループ） 初期表示 -->
-    <video id="runVideo"  style="opacity:1; z-index:1" preload="auto" playsinline>
+    <video id="video" preload="auto" playsinline>
       <source src="0001-2400.mp4" type="video/mp4">
-    </video>
-    <!-- 停止時（短尺・差し替え） -->
-    <video id="stopVideo" style="z-index:2" preload="auto" playsinline>
-      <source src="0001-0240.mp4" type="video/mp4">
     </video>
   </div>
 
@@ -85,10 +78,19 @@
 <script>
   "use strict";
 
-  const runVideo  = document.getElementById("runVideo");
-  const stopVideo = document.getElementById("stopVideo");
-  const startBtn  = document.getElementById("startBtn");
-  const stopBtn   = document.getElementById("stopBtn");
+  const video    = document.getElementById("video");
+  const startBtn = document.getElementById("startBtn");
+  const stopBtn  = document.getElementById("stopBtn");
+
+  /* ==== 動画の構成（0001-2400.mp4） ====
+     先頭: 回り始め（加速）→ 中盤: 全速 → 末尾 WIND 秒: 回り終わり（減速して停止）
+     循環中は「回り終わりの直前の全速部分」だけをループして回し続け、
+     停止クリック時に、その瞬間の回転速度に応じて末尾 WIND 秒の中へシークする。 */
+  const WIND     = 5;      // 末尾の「回り終わり」区間（秒）
+  const LOOP_LEN = 3;      // 全速を持続させるループ区間の長さ（秒）
+  const EPS      = 0.25;   // 末尾に入る前にループバックする余裕（秒）
+
+  function windStart() { const d = video.duration; return (d && isFinite(d)) ? d - WIND : 0; }
 
   /* ---- CPU負荷ワーカー（コアごとに計算ループ＝ファンが回る） ---- */
   const workerSource = `
@@ -113,7 +115,6 @@
   const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "application/javascript" }));
   let workers = [];
 
-  // 再生が始まってから、コアを1個ずつ時間差で起動（一気に掴んでカクつかせない）
   function startLoad() {
     const cores = navigator.hardwareConcurrency || 4;
     for (let i = 0; i < cores; i++) {
@@ -130,56 +131,37 @@
     workers = [];
   }
 
-  /* ---- クロスフェード：下の動画は不透明のまま、上に次の動画をフェードイン ---- */
-  let current = runVideo;
-  function crossTo(incoming) {
-    if (incoming === current) return;
-    const outgoing = current;
-    incoming.style.zIndex = "2";
-    outgoing.style.zIndex = "1";
-    outgoing.style.opacity = "1";
-    incoming.style.opacity = "0";
-    void incoming.offsetWidth;
-    incoming.style.opacity = "1";
-    current = incoming;
-  }
-
-  /* ---- 起動時：両動画を先頭フレームで描画して準備（切替時の黒を防ぐ） ---- */
-  runVideo.addEventListener("loadeddata",  () => { try { runVideo.currentTime  = 0; } catch (_) {} });
-  stopVideo.addEventListener("loadeddata", () => { try { stopVideo.currentTime = 0; } catch (_) {} });
-
-  /* ---- スピンアップの進み具合＝現在の回転速度(0〜1)を追跡 ----
-     長尺=加速動画。末尾 TAIL 区間を「全速」とみなし、そこへ達したら
-     末尾だけをループさせる（毎回スロー状態へ戻る違和感を防ぐ）。 */
-  const TAIL = 0.18;               // 末尾18%＝全速の持続ループ区間
-  let reachedFull = false;         // 一度でも全速に達したか
-  function spinSpeed() {           // 現在の回転速度（0=停止, 1=全速）
+  /* ---- 回転速度(0〜1)を追跡 ---- */
+  let reachedFull = false;
+  function spinSpeed() {
     if (reachedFull) return 1;
-    const d = runVideo.duration;
-    if (!d || !isFinite(d)) return 0;
-    return Math.max(0, Math.min(1, runVideo.currentTime / (d * (1 - TAIL))));
+    const ws = windStart();
+    return ws > 0 ? Math.max(0, Math.min(1, video.currentTime / ws)) : 0;
   }
-  runVideo.addEventListener("timeupdate", () => {
+
+  /* ---- 循環中：末尾に入る手前で全速区間へループバック ---- */
+  video.addEventListener("timeupdate", () => {
     if (!circulating) return;
-    const d = runVideo.duration;
-    if (!d || !isFinite(d)) return;
-    if (runVideo.currentTime >= d - 0.06) {   // 加速し切った → 全速の末尾へループ
+    const ws = windStart();
+    if (ws > 0 && video.currentTime >= ws - EPS) {
       reachedFull = true;
-      try { runVideo.currentTime = d * (1 - TAIL); } catch (_) {}
+      try { video.currentTime = Math.max(0, ws - LOOP_LEN); } catch (_) {}
     }
   });
 
-  /* ---- 循環開始 ---- */
+  /* ---- 起動時：先頭フレームで静止 ---- */
+  video.addEventListener("loadeddata", () => { try { video.currentTime = 0; } catch (_) {} });
+
+  /* ---- 循環開始（回り始めから） ---- */
   let circulating = false;
   startBtn.addEventListener("click", async () => {
     if (circulating) return;
     circulating = true;
-
-    runVideo.loop = false;        // 末尾ループは timeupdate で管理
     reachedFull = false;
-    runVideo.currentTime = 0;     // スピンアップを最初から
-    crossTo(runVideo);
-    try { await runVideo.play(); } catch (_) {}
+
+    video.loop = false;
+    video.currentTime = 0;
+    try { await video.play(); } catch (_) {}
     setTimeout(startLoad, 120);
 
     startBtn.disabled = true;
@@ -188,25 +170,20 @@
     stopBtn.classList.remove("active");
   });
 
-  /* ---- 停止：負荷を止め、シームレスに短尺へ差し替え ---- */
+  /* ---- 停止：負荷を止め、末尾の「回り終わり」へ速度に応じてシーク ---- */
   stopBtn.addEventListener("click", async () => {
     if (!circulating) return;
-    circulating = false;
-
+    circulating = false;                 // 先にfalse（timeupdateのループバックを止める）
     stopLoad();
-    stopVideo.loop = false;
-    // 現在の回転速度に合わせてスピンダウンの開始位置を決める。
-    // 速い(1)→最初から全減速 / 遅い(0)→終盤からすぐ停止
-    const speed = spinSpeed();
-    const sd = stopVideo.duration;
-    if (sd && isFinite(sd)) {
-      stopVideo.currentTime = Math.max(0, Math.min(sd - 0.05, (1 - speed) * sd));
-    } else {
-      stopVideo.currentTime = 0;
+
+    const ws = windStart();
+    const d  = video.duration;
+    if (ws > 0 && d && isFinite(d)) {
+      const speed = spinSpeed();         // 1=全速 → 末尾先頭 / 0=低速 → 末尾終盤
+      const target = ws + (1 - speed) * WIND;
+      try { video.currentTime = Math.min(d - 0.05, target); } catch (_) {}
     }
-    crossTo(stopVideo);
-    try { await stopVideo.play(); } catch (_) {}
-    setTimeout(() => runVideo.pause(), 350);
+    try { await video.play(); } catch (_) {}   // 末尾を再生し切って停止フレームで静止
 
     startBtn.disabled = false;
     stopBtn.disabled = true;
